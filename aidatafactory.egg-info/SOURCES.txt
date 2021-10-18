@@ -1,0 +1,9 @@
+README.md
+setup.py
+aidatafactory/__init__.py
+aidatafactory/factory.py
+aidatafactory.egg-info/PKG-INFO
+aidatafactory.egg-info/SOURCES.txt
+aidatafactory.egg-info/dependency_links.txt
+aidatafactory.egg-info/requires.txt
+aidatafactory.egg-info/top_level.txt
