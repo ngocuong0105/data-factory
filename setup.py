@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 import codecs
 import os
 
-VERSION = '0.0.1'
+VERSION = '0.0.3'
 DESCRIPTION = 'Data factory for producing synthetic data.'
 LONG_DESCRIPTION = 'Variantional Autoencoder used as a generative model for generating synthetic data.'
 

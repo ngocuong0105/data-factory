@@ -120,9 +120,10 @@ class Factory:
     '''
     Trains VAE model and generates synthetic data.
 
-    Initialize: Only 'data_spec' is mandatory - specifies which columns are categorical and which continuous.
+    Initialize: Only 'columns_spec' is mandatory - specifies which columns are categorical and which continuous.
     
     Methods: 
+
     learn(data: pd.DataFrame): Trains VAE model for each category. Models are saved in self.models.
                               Plots  for each category a fitted sample vs real data.
                               
@@ -130,18 +131,16 @@ class Factory:
     '''
 
     def __init__(
-        self, data_spec: dict, \
+        self, columns_spec: dict, \
         distribution_spec: dict = {},\
-        log_transform:bool = True,\
         latent_dim:int = 16,\
-        batch_size:int = 64,\
-        epochs:int = 15,\
+        batch_size:int = 32,\
+        epochs:int = 10,\
         learning_rate:float =1e-3
     ):
-        self.val_cols = data_spec.get('val_cols',[])
-        self.cat_col = data_spec.get('cat_col',[])
+        self.numerical = columns_spec.get('numerical',[])
+        self.categorical = columns_spec.get('categorical',['dummy'])
         self.distribution_spec = distribution_spec
-        self.log_transform = log_transform
         self.latent_dim = latent_dim
         self.batch_size = batch_size
         self.epochs = epochs
@@ -152,19 +151,18 @@ class Factory:
         For each category we train separate VAE. self.model will save all VAEs
         '''
         self.model = {}
-        categories = data[self.cat_col[0]].drop_duplicates()
+        if self.categorical[0]=='dummy':
+            data['dummy'] = 'All Data'
+        categories = data[self.categorical[0]].drop_duplicates()
+
         for category_name in categories:
             # real data per category
-            df_cat = data[data[self.cat_col[0]]==category_name]
+            df = data[data[self.categorical[0]]==category_name]
             # real data per category only value columns
-            df_cat_val = df_cat[self.val_cols]
-            
-            if self.log_transform and self.distribution_spec.get(category_name,None)!='bernoulli':
-                for value_col in self.val_cols:
-                    df_cat_val[value_col] =  np.log(df_cat_val[value_col] + 1)
+            df = df[self.numerical]
             
             # dimension of real data we want to synthesize
-            original_dim = len(df_cat_val.columns)
+            original_dim = len(df.columns)
 
             # VAE OBJECT
             vae = VariationalAutoEncoder(
@@ -179,13 +177,15 @@ class Factory:
             loss_metric = tf.keras.metrics.Mean()
             
             # prepare data in form of batches of tensors
-            train_dataset = tf.data.Dataset.from_tensor_slices(df_cat_val)
-            train_dataset = train_dataset.shuffle(buffer_size=len(df_cat_val)).batch(self.batch_size)
+            # before data stabalize with log
+            for value_col in self.numerical:
+                df[value_col] = np.log(df[value_col]+1)
+            train_dataset = tf.data.Dataset.from_tensor_slices(df)
+            train_dataset = train_dataset.shuffle(buffer_size=len(df)).batch(self.batch_size)
             
             # Iterate over epochs.
             for epoch in range(self.epochs):
                 ls = []
-                print(f"Start of epoch {epoch}")
                 for step, x_batch_train in enumerate(train_dataset):
                     with tf.GradientTape() as tape:
                         # goes into call method
@@ -202,31 +202,24 @@ class Factory:
                     
                 # final loss is likelihood-ELBO
                 loss_metric(loss)
-                print('Loss:', loss_metric.result().numpy())
+                print(f'Loss in epoch {epoch}:', loss_metric.result().numpy(),end='\n')
 
-
-            # Plot comparison between fitted data and real after the last epoch
-            synthetic = pd.DataFrame()
-            if self.log_transform  and self.distribution_spec.get(category_name,None)!='bernoulli':
-                synthetic['mIncome'] = np.exp(pd.Series(ls)) -1 # exponentiate back
-            else:
-                synthetic['mIncome'] = pd.Series(ls)
-
-            # data
-            clip = df_cat[(df_cat['MonthlyIncome']<30000) & (df_cat['MonthlyIncome']>0)]
-            clip_synthetic = synthetic[synthetic['mIncome']<30000]
-            # plot
-            fig = plt.figure(figsize=(9,5))
-            sns.histplot(clip, x = 'MonthlyIncome', element="poly",  stat = 'density',alpha = 1)
-            sns.histplot(clip_synthetic, x = 'mIncome', element="poly",  stat = 'density', color= 'purple', alpha = 0.5)
-            fig.legend(labels=['Real','Synthetic'])
-            print(f'FINISHED {category_name}')
-            plt.title(f'Last Epoch, Effect category {category_name}')
-            plt.show()
-                
+                # Plot comparison between fitted data and real after the last epoch
+                synthetic = pd.DataFrame()
+                synthetic['synth'] = pd.Series(ls)
+                # plot
+                print('Plot evolution:')
+                fig = plt.figure(figsize=(7,4))
+                for value_col in self.numerical:
+                    sns.histplot(df, x = np.exp(df[value_col])-1, element="poly",  stat = 'density',alpha = 1)
+                    sns.histplot(synthetic, x = np.exp(synthetic['synth'])-1, element="poly",  stat = 'density', color= 'purple', alpha = 0.5)
+                    fig.legend(labels=['Real','Synthetic'])
+                    plt.title(f'Epoch {epoch}, Category {category_name}, Numerical {value_col}')
+                    plt.show(block=False)
+                    
             # SAVE MODEL for generating synthetic samples
             self.model[category_name] = vae
-            
+        
             
     def generate(self, num_rows: int, data:pd.DataFrame):
         
@@ -237,37 +230,35 @@ class Factory:
             sample = pd.concat([data.sample(min(num_rows,len(data))).reset_index(),sample])
             num_rows -= len(data)
         
-        categories = sample[self.cat_col[0]].drop_duplicates()
+        categories = sample[self.categorical[0]].drop_duplicates()
         
         ls = [] # holds synthesized frames for each category
         # sample from learned  VAE model for each category
         for category_name in categories:
-            df_cat = sample[sample[self.cat_col[0]]==category_name]
-            df_cat_val = df_cat[self.val_cols]
+            df_cat = sample[sample[self.categorical[0]]==category_name]
+            df_cat_val = df_cat[self.numerical]
             
             # log transform
-            if self.log_transform and self.distribution_spec.get(category_name,None)!='bernoulli':
-                for value_col in self.val_cols:
-                    df_cat_val[value_col] =  np.log(df_cat_val[value_col] + 1)
+            for value_col in self.numerical:
+                df_cat_val[value_col] =  np.log(df_cat_val[value_col] + 1)
 
             train_dataset = tf.data.Dataset.from_tensor_slices(df_cat_val)
             train_dataset = train_dataset.shuffle(buffer_size=len(df_cat_val)).batch(len(df_cat_val))
 
             reconstructed = pd.DataFrame(self.model[category_name](tuple(train_dataset)[0]).numpy())
-            reconstructed.columns = self.val_cols
+            reconstructed.columns = self.numerical
             
             # exponentiate back
-            if self.log_transform and self.distribution_spec.get(category_name,None)!='bernoulli':
-                for value_col in self.val_cols:
-                    reconstructed[value_col] = np.exp(reconstructed[value_col]) - 1
+            for value_col in self.numerical:
+                reconstructed[value_col] = np.exp(reconstructed[value_col]).round(0) - 1
                     
             # add category column
-            reconstructed[self.cat_col[0]] = df_cat[self.cat_col[0]].iloc[0]
+            reconstructed[self.categorical[0]] = df_cat[self.categorical[0]].iloc[0]
             # save reconstructed dataframe
             ls.append(reconstructed)
-            
-        return pd.concat(ls)
-    
+        return pd.concat(ls).reset_index(drop = True)
+
+
 class Sampling(layers.Layer):
     """
     reparametrization trick uses (z_mean, z_log_var) to sample z

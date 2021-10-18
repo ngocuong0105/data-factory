@@ -1,1 +1,1 @@
-from factory import Factory
+from aidatafactory.factory import Factory
